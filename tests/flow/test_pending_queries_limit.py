@@ -1,6 +1,7 @@
-import threading
 from RLTest import Env
 from redisgraph import Graph
+import utils
+from utils import *
 
 # 1.test getting and setting config
 # 2. test overflowing the server when there's a limit
@@ -11,16 +12,20 @@ from redisgraph import Graph
 error_encountered = False
 
 GRAPH_NAME = "max_pending_queries"
+# note: if test_03_overflow_with_limit is flaky 
+# on machines with many cores on some runs the rate at which the queries been executed by the workers 
+# might be greater than the insertion to the work queues. 
+# This ends up were there is at most one job in the queue which failed
+# test_03_overflow_with_limit. Increasing the execution time of the query should resolved this.
 SLOW_QUERY = "UNWIND range (0, 100000) AS x WITH x WHERE (x / 2) = 50  RETURN x"
 
-def issue_query(conn, q):
-    global error_encountered
-
+def issue_query(q):
     try:
-        conn.execute_command("GRAPH.QUERY", GRAPH_NAME, q)
+        utils.con.execute_command("GRAPH.QUERY", GRAPH_NAME, q)
+        return False
     except Exception as e:
         assert "Max pending queries exceeded" in str(e)
-        error_encountered = True
+        return True
 
 class testPendingQueryLimit():
     def __init__(self):
@@ -42,27 +47,15 @@ class testPendingQueryLimit():
         self.env.assertEquals(max_queued_queries, 10)
 
     def stress_server(self):
+        global error_encountered
+
         threads = []
-        connections = []
         threadpool_size = self.conn.execute_command("GRAPH.CONFIG", "GET", "THREAD_COUNT")[1]
         thread_count = threadpool_size * 5
 
-        # init connections
-        for i in range(thread_count):
-            connections.append(self.env.getConnection())
+        results = Multiproc.run_multiproc(self.env, thread_count, issue_query, (SLOW_QUERY,))
+        error_encountered = any(results)
 
-        # invoke queries
-        for i in range(thread_count):
-            con = connections.pop()
-            t = threading.Thread(target=issue_query, args=(con, SLOW_QUERY))
-            t.setDaemon(True)
-            threads.append(t)
-            t.start()
-
-        # wait for threads to return
-        for i in range(thread_count):
-            t = threads[i]
-            t.join()
 
     def test_02_overflow_no_limit(self):
         global error_encountered

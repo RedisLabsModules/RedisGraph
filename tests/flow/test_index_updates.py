@@ -2,6 +2,8 @@ import os
 import sys
 import random
 import string
+import utils
+from utils import *
 from RLTest import Env
 from redisgraph import Graph, Node, Edge
 
@@ -15,6 +17,18 @@ labels = ["label_a", "label_b"]
 fields = ['unique', 'group', 'doubleval', 'intval', 'stringval']
 groups = ["Group A", "Group B", "Group C","Group D", "Group E"]
 node_ctr = 0
+
+query_create_index = "CREATE INDEX ON :person(age)"
+query_drop_index = "DROP INDEX ON :person(age)"
+query_read_index = "MATCH (p:person) WHERE p.age > 0 RETURN p.age"
+
+def issue_queries(queries, graph_id):
+    nrep = 5
+    for i in range(nrep):
+        for x in queries:
+            utils.con.execute_command("GRAPH.QUERY", graph_id, x)
+    return True
+
 
 class testIndexUpdatesFlow(FlowTestsBase):
     def __init__(self):
@@ -176,3 +190,30 @@ class testIndexUpdatesFlow(FlowTestsBase):
         expected_result = []
         self.env.assertEquals(result.result_set, expected_result)
 
+    def populate_graph_many_nodes(self, graph):
+        global node_ctr
+        for i in range(10000):
+            node = Node("person", properties = {'age': i})
+            redis_graph.add_node(node)
+        redis_graph.commit()
+
+    def test07_conccurent_indices(self):
+        n_indices = 4
+        graphs = []
+        connections = []
+
+        for i in range(n_indices):
+            con = self.env.getConnection()
+            connections.append(con)
+            graph = Graph("graph_" + str(i), con)
+            self.populate_graph_many_nodes(graph)
+            graphs.append(graph)
+
+        # create proccess for each index
+        with Multiproc(self.env, n_indices) as mp:
+            args = (
+            ((query_create_index, query_drop_index), "graph_0"),
+            ((query_read_index,), "graph_1"),
+            ((query_read_index,), "graph_2"),
+            ((query_read_index,), "graph_3"))
+            mp.add_work_wait((issue_queries,)*n_indices, args)
